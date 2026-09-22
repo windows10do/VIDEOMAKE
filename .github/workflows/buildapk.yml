@@ -1,0 +1,391 @@
+name: Build APKs
+
+on:
+  workflow_dispatch:
+
+  push:
+    paths:
+      - "video_make/**"
+      - "vmptomp4/**"
+      - ".github/workflows/buildapks.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build VIDEO MAKE and VMPTOMP4
+    runs-on: ubuntu-24.04
+
+    steps:
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ======================================================
+      # CREATE REQUIRED DIRECTORIES
+      # ======================================================
+
+      - name: Create project directories
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p video_make
+          mkdir -p vmptomp4
+          mkdir -p bin
+          mkdir -p .github/workflows
+
+      # ======================================================
+      # CREATE MISSING MAIN FILES
+      # ======================================================
+
+      - name: Create missing main.py files
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -f video_make/main.py ]; then
+            if [ -f video_make/video_make.py ]; then
+              cat > video_make/main.py <<'PY'
+          import runpy
+          from pathlib import Path
+
+          BASE = Path(__file__).resolve().parent
+
+          runpy.run_path(
+              str(BASE / "video_make.py"),
+              run_name="__main__"
+          )
+          PY
+            else
+              echo "ERROR: video_make/main.py is missing."
+              echo "Also no video_make/video_make.py was found."
+              exit 1
+            fi
+          fi
+
+          if [ ! -f vmptomp4/main.py ]; then
+            if [ -f vmptomp4/vmptomp4.py ]; then
+              cat > vmptomp4/main.py <<'PY'
+          import runpy
+          from pathlib import Path
+
+          BASE = Path(__file__).resolve().parent
+
+          runpy.run_path(
+              str(BASE / "vmptomp4.py"),
+              run_name="__main__"
+          )
+          PY
+            elif [ -f vmptomp4/vmp_to_mp4.py ]; then
+              cat > vmptomp4/main.py <<'PY'
+          import runpy
+          from pathlib import Path
+
+          BASE = Path(__file__).resolve().parent
+
+          runpy.run_path(
+              str(BASE / "vmp_to_mp4.py"),
+              run_name="__main__"
+          )
+          PY
+            else
+              echo "ERROR: vmptomp4/main.py is missing."
+              echo "No VMPTOMP4 Python entrypoint was found."
+              exit 1
+            fi
+          fi
+
+      # ======================================================
+      # ANDROID FFMPEG COMPATIBILITY
+      # ======================================================
+
+      - name: Create FFmpeg Android compatibility modules
+        shell: bash
+        run: |
+          set -e
+
+          for APP in video_make vmptomp4; do
+            if [ ! -f "$APP/imageio_ffmpeg.py" ]; then
+              cat > "$APP/imageio_ffmpeg.py" <<'PY'
+          """
+          Android compatibility layer.
+
+          python-for-android provides FFmpeg directly.
+          This keeps existing application code that calls
+          imageio_ffmpeg.get_ffmpeg_exe() working.
+          """
+
+          import shutil
+
+
+          def get_ffmpeg_exe():
+              executable = shutil.which("ffmpeg")
+
+              if executable:
+                  return executable
+
+              return "ffmpeg"
+          PY
+            fi
+          done
+
+      # ======================================================
+      # BUILDOZER SPECS
+      # ======================================================
+
+      - name: Create Buildozer specifications
+        shell: bash
+        run: |
+          set -e
+
+          create_spec() {
+            APP="$1"
+            TITLE="$2"
+            PACKAGE="$3"
+
+            if [ ! -f "$APP/buildozer.spec" ]; then
+              cat > "$APP/buildozer.spec" <<EOF
+          [app]
+
+          title = $TITLE
+          package.name = $PACKAGE
+          package.domain = org.videomake
+
+          version = 1.0.0
+
+          source.dir = .
+          source.include_exts = py,png,jpg,jpeg,kv,atlas,json,vmp,txt,ttf,otf,mp3,wav,m4a,aac,mp4,mov,mkv,webm,avi
+          source.exclude_dirs = bin,.buildozer,__pycache__,.git
+
+          requirements = python3,kivy,pillow,numpy,imageio,ffmpeg,av_codecs
+
+          android.permissions = READ_MEDIA_IMAGES,READ_MEDIA_VIDEO,READ_MEDIA_AUDIO,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE
+
+          android.api = 35
+          android.minapi = 23
+          android.ndk = 28c
+
+          android.archs = arm64-v8a,armeabi-v7a
+
+          p4a.branch = develop
+
+          orientation = landscape
+
+          android.enable_androidx = 1
+
+          fullscreen = 0
+          EOF
+            fi
+          }
+
+          create_spec \
+            "video_make" \
+            "VIDEO MAKE" \
+            "videomake"
+
+          create_spec \
+            "vmptomp4" \
+            "VMPTOMP4" \
+            "vmptomp4"
+
+      # ======================================================
+      # GITIGNORE
+      # ======================================================
+
+      - name: Create missing .gitignore files
+        shell: bash
+        run: |
+          set -e
+
+          for APP in video_make vmptomp4; do
+            if [ ! -f "$APP/.gitignore" ]; then
+              cat > "$APP/.gitignore" <<'EOF'
+          .buildozer/
+          bin/
+          __pycache__/
+          *.pyc
+          EOF
+            fi
+          done
+
+      # ======================================================
+      # INSTALL SYSTEM DEPENDENCIES
+      # ======================================================
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            zip \
+            unzip \
+            openjdk-17-jdk \
+            autoconf \
+            automake \
+            autopoint \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo5 \
+            cmake \
+            libffi-dev \
+            libssl-dev
+
+      # ======================================================
+      # INSTALL PYTHON BUILD TOOLS
+      # ======================================================
+
+      - name: Install Buildozer
+        shell: bash
+        run: |
+          set -e
+
+          python -m pip install --upgrade pip setuptools wheel
+
+          python -m pip install \
+            buildozer \
+            cython==0.29.34
+
+      # ======================================================
+      # CACHE BUILDOZER / ANDROID BUILDS
+      # ======================================================
+
+      - name: Cache Buildozer
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.cache/pip
+          key: buildozer-${{ runner.os }}-${{ hashFiles('video_make/buildozer.spec', 'vmptomp4/buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      # ======================================================
+      # BUILD VIDEO MAKE
+      # ======================================================
+
+      - name: Build VIDEO MAKE APK
+        working-directory: video_make
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf bin
+
+          buildozer -v android debug
+
+          mkdir -p ../bin
+
+          APK="$(find bin -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: VIDEO MAKE APK was not produced."
+            exit 1
+          fi
+
+          cp "$APK" ../bin/videomake-debug.apk
+
+          echo "VIDEO MAKE APK:"
+          ls -lh ../bin/videomake-debug.apk
+
+      # ======================================================
+      # BUILD VMPTOMP4
+      # ======================================================
+
+      - name: Build VMPTOMP4 APK
+        working-directory: vmptomp4
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf bin
+
+          buildozer -v android debug
+
+          mkdir -p ../bin
+
+          APK="$(find bin -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: VMPTOMP4 APK was not produced."
+            exit 1
+          fi
+
+          cp "$APK" ../bin/vmptomp4-debug.apk
+
+          echo "VMPTOMP4 APK:"
+          ls -lh ../bin/vmptomp4-debug.apk
+
+      # ======================================================
+      # VERIFY OUTPUT
+      # ======================================================
+
+      - name: Verify APK output
+        shell: bash
+        run: |
+          set -e
+
+          test -f bin/videomake-debug.apk
+          test -f bin/vmptomp4-debug.apk
+
+          echo
+          echo "Generated APKs:"
+          ls -lh bin/*.apk
+
+      # ======================================================
+      # SHOW GIT CHANGES
+      # ======================================================
+
+      - name: Show generated repository changes
+        shell: bash
+        run: |
+          git status --short
+
+      # ======================================================
+      # COMMIT APKs AND GENERATED FILES
+      # ======================================================
+
+      - name: Commit APKs to repository
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            video_make \
+            vmptomp4 \
+            bin
+
+          if git diff --cached --quiet; then
+            echo "Nothing changed. No commit required."
+            exit 0
+          fi
+
+          git commit \
+            -m "Build VIDEO MAKE and VMPTOMP4 APKs"
+
+          git push
